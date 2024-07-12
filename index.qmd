@@ -1,0 +1,726 @@
+---
+title: "AIR POLLUTION (AMBIENT PM2.5) HEALTH BURDEN"
+author: "(E. Tamayo)"
+format: dashboard
+theme: flatly
+execute:
+  echo: false
+  warning: false
+  message: false
+editor_options: 
+  chunk_output_type: inline
+---
+
+```{r}
+# Load packages
+if(!require(pacman)) install.packages("pacman")
+pacman::p_load(tidyverse, 
+               here,
+               dplyr,
+               sf,
+               gapminder,
+               bslib, 
+               bsicons, 
+               plotly, 
+               reactable, 
+               shiny,
+               rnaturalearth,
+               countrycode,
+               htmltools,
+               reactable, 
+               janitor,
+               scales,
+               glue,
+               RColorBrewer)
+```
+
+```{r}
+# import and merge the datasets from SOGA (pop-weighted mortality), GBD2021 (air pollution exposure estimates), and gapminder (GDP per capita)
+
+# import the air pollution-related deaths per 100,000
+airpoll_mortality <- read_csv(here::here("data/SOGA/agestandardized_mortalityfromAP_GBD2021.csv"))
+
+airpoll_mortality_clean <- airpoll_mortality %>% 
+  clean_names() %>% 
+  mutate(across(everything(), ~ gsub('"|=', '', .))) %>% 
+  mutate(year = as.numeric(year),
+         burden_mean =  as.numeric(burden_mean),
+         burden_upper = as.numeric(burden_upper),
+         burden_lower = as.numeric(burden_lower)) %>% 
+  filter(name != "Philippines") %>% #repeated entries
+  mutate(continent = case_when(
+    grepl("Asia", name, ignore.case = TRUE) ~ "Asia",
+    grepl("America", name, ignore.case = TRUE) ~ "Americas",
+    grepl("Caribbean", name, ignore.case = TRUE) ~ "Americas",
+    grepl("Africa", name, ignore.case = TRUE) ~ "Africa",
+    grepl("Europe", name, ignore.case = TRUE) ~ "Europe",
+    grepl("Oceania", name, ignore.case = TRUE) ~ "Oceania",
+    grepl("Australasia", name, ignore.case = TRUE) ~ "Oceania",
+    TRUE ~ NA_character_  
+  ))
+
+airpoll_mortality_clean_asia <- airpoll_mortality_clean %>% 
+  filter(name %in% c("Australasia", 
+                  "East Asia", 
+                  "High-income Asia Pacific",
+                  "Oceania", 
+                  "South Asia", 
+                  "Southeast Asia"))
+
+# import the air pollution concentration estimates
+gbd_pm25 <- read_csv(here::here("data/GBD/IHME_GBD_2021_AIR_POLLUTION_1990_2021/IHME_GBD_2021_AIR_POLLUTION_1990_2021_PM_Y2022M01D31.csv"))
+
+gbd_pm25 <- gbd_pm25 %>% 
+  rename(year = year_id)
+
+gbd_pm25exp <- read_csv(here::here("data/SOGA/pop-weighted_PM2.5exposure_GBD2021.csv"))
+
+gbd_pm25exp <- gbd_pm25exp %>% 
+  clean_names()
+
+gbd_pm25exp_asia <- gbd_pm25exp %>% 
+    filter(name %in% c("Australasia", 
+                  "East Asia", 
+                  "High-income Asia Pacific",
+                  "Oceania", 
+                  "Philippines", 
+                  "South Asia", 
+                  "Southeast Asia"))
+
+
+
+# import the data on total number of deaths from ambient air pollution (not normalized to the population)
+
+ap_mort_total <- read_csv(here::here("data/SOGA/total_mortalityfromPM25_GBD2021.csv"))
+
+ap_mort_clean <- ap_mort_total %>% 
+  clean_names() %>% 
+  mutate(across(everything(), ~ gsub('"|=', '', .))) %>% 
+  mutate(year = as.numeric(year),
+         burden_mean =  as.numeric(burden_mean),
+         burden_mean_rounded =  as.numeric(burden_mean_rounded),
+         burden_upper = as.numeric(burden_upper),
+         burden_lower = as.numeric(burden_lower)) %>% 
+  filter(name != "Philippines") #repeated entries
+
+ap_mort_clean_asia <- ap_mort_clean %>% 
+  filter(name %in% c("Australasia", 
+                  "East Asia", 
+                  "High-income Asia Pacific",
+                  "Oceania", 
+                  "South Asia", 
+                  "Southeast Asia"))
+
+# import the data on total number of deaths from air pollution (not normalized to the population)
+
+totalap_deaths <- read_csv(here::here("data/SOGA/total_mortalityfromAP_GBD2021.csv"))
+
+totalap_deaths_clean <- totalap_deaths %>% 
+  clean_names() %>% 
+  mutate(across(everything(), ~ gsub('"|=', '', .))) %>% 
+  mutate(year = as.numeric(year),
+         burden_mean =  as.numeric(burden_mean),
+         burden_mean_rounded =  as.numeric(burden_mean_rounded),
+         burden_upper = as.numeric(burden_upper),
+         burden_lower = as.numeric(burden_lower))
+
+# load the GDP data from gapminder, for years 1990-2022 
+
+#gdp <- gapminder %>% 
+#  filter(between(year, 1990, 2022))
+
+# I realized I should have other sources of data that is more updated to 2022, since the gapminder data is only up to 2010
+
+# import the latest GDP data from World Bank up to 2023
+gdp <- read_csv(here::here("data/GDP/WorldBank_CountryGDP.csv"))
+
+gdp <- gdp %>% 
+  clean_names()
+  
+gdp_long <- gdp %>% 
+  pivot_longer(
+    cols = starts_with("x"),
+    names_to = "year",
+    values_to = "gdp") %>% 
+  mutate(across(everything(), ~ gsub('x', '', .))) %>% 
+  mutate(year = as.numeric(year),
+         gdp =  as.numeric(gdp)) %>% 
+  mutate(gdp_millions = gdp/1000000)
+
+
+# use the GDP per capita data to normalize!
+
+gdp_percap <- read_csv(here::here("data/GDP/WorldBank_CountryGDPperCapita.csv"))
+
+gdp_percap <- gdp_percap %>% 
+  clean_names()
+
+gdp_percap_long <- gdp_percap %>% 
+  pivot_longer(
+    cols = starts_with("x"),
+    names_to = "year",
+    values_to = "gdp_percapita") 
+
+gdp_percap_clean <- gdp_percap_long %>% 
+  mutate(across(everything(), ~ gsub('x', '', .))) %>% 
+  mutate(year = as.numeric(year),
+         gdp_percapita = as.numeric(gdp_percapita)) 
+  #%>% mutate(gdp_cap_thousands = gdp_percapita/1000)
+
+mortality_gdppercap <- 
+  left_join(airpoll_mortality_clean, gdp_percap_clean,
+                            by = c("country" = "country_name", 
+                                   "year")) %>% 
+  drop_na(burden_mean, gdp_percapita, country, continent, year) # Remove rows with NA values in any of the columns used in the plot
+
+asia_mortality_gdppercap <- 
+  left_join(airpoll_mortality_clean_asia, gdp_percap_clean,
+                            by = c("country" = "country_name", 
+                                   "year")) %>% 
+  drop_na(burden_mean, gdp_percapita, country, continent, year)
+
+```
+
+```{r}
+
+# Calculations for the value boxes
+
+highest_APmortality_country <- airpoll_mortality_clean %>% 
+  filter(year == 2021) %>% 
+  arrange(-burden_mean) %>% 
+  head(1) %>% 
+  pull(country)
+  
+highest_APmortality_value <- airpoll_mortality_clean %>% 
+  filter(year == 2021) %>% 
+  arrange(-burden_mean) %>% 
+  head(1) %>% 
+  pull(burden_mean) %>% 
+  round(1)
+
+lowest_APmortality_country <- airpoll_mortality_clean %>% 
+  filter(year == 2021) %>% 
+  arrange(burden_mean) %>% 
+  head(1) %>% 
+  pull(country)
+  
+lowest_APmortality_value <- airpoll_mortality_clean %>% 
+  filter(year == 2021) %>% 
+  arrange(burden_mean) %>% 
+  head(1) %>% 
+  pull(burden_mean) %>% 
+  round(1)
+
+highest_pm25_country <- gbd_pm25exp %>% 
+  filter(year == 2020) %>% 
+  arrange(-exposure_mean) %>% 
+  head(1) %>% 
+  pull(country)
+
+highest_pm25_value <- gbd_pm25exp %>% 
+  filter(year == 2020) %>% 
+  arrange(-exposure_mean) %>% 
+  head(1) %>% 
+  pull(exposure_mean) %>% 
+  round(1)
+
+lowest_pm25_country <- gbd_pm25exp %>% 
+  filter(year == 2020) %>% 
+  arrange(exposure_mean) %>% 
+  head(1) %>% 
+  pull(country)
+
+lowest_pm25_value <- gbd_pm25exp %>% 
+  filter(year == 2020) %>% 
+  arrange(exposure_mean) %>% 
+  head(1) %>% 
+  pull(exposure_mean) %>% 
+  round(1)
+
+# total global deaths from outdoor air pollution
+
+totalpm25_deaths <- ap_mort_clean %>% 
+  filter(year == 2021) %>% 
+  summarise(total_burden = sum(burden_mean_rounded, na.rm = TRUE)) %>%
+  pull(total_burden)
+#formatted_totalpm25_deaths <- comma(totalpm25_deaths)
+formatted_totalpm25_deaths <- round((totalpm25_deaths / 1000000), 1)
+
+totalap_deaths_clean2021 <- totalap_deaths_clean %>% 
+  filter(year == 2021) %>% 
+  summarise(total_APburden = sum(burden_mean_rounded, na.rm = TRUE)) %>%
+  pull(total_APburden)
+
+pm25_percent_share <- round((totalpm25_deaths / totalap_deaths_clean2021) *100, 0)
+
+# to see unique entries in the regions (column 'name')
+
+# unique_names <- ap_mort_clean %>%
+#   distinct(name) %>%
+#   pull(name)
+# 
+# unique_names
+ 
+totalpm25_deaths_asia <- ap_mort_clean_asia %>% 
+  filter(year == 2021) %>% 
+  summarise(total_burden = sum(burden_mean_rounded, na.rm = TRUE)) %>%
+  pull(total_burden)
+#formatted_totalpm25_deaths_asia <- comma(totalpm25_deaths_asia)
+formatted_totalpm25_deaths_asia <- round((totalpm25_deaths_asia / 1000000), 1)
+
+# % share of deaths in asia compared to the rest of the world
+
+percent_share_asia <- (totalpm25_deaths_asia / totalpm25_deaths) * 100
+formatted_percent_share_asia <- percent(percent_share_asia / 100)
+
+# highest number of deaths 
+
+asia_highest_APmortality_country <- ap_mort_clean_asia %>% 
+  filter(year == 2021) %>% 
+  arrange(-burden_mean) %>% 
+  head(1) %>% 
+  pull(country)
+  
+asia_highest_APmortality_value <- ap_mort_clean_asia %>% 
+  filter(year == 2021) %>% 
+  arrange(-burden_mean) %>% 
+  head(1) %>% 
+  pull(burden_mean) %>% 
+  round(1)
+#formatted_asia_highest_APmortality_value <- comma(asia_highest_APmortality_value)
+formatted_asia_highest_APmortality_value <- 
+  round((asia_highest_APmortality_value / 1000000), 1)
+
+# highest number of deaths per 100,000 population
+
+asia_highest_mortpercap_country <- airpoll_mortality_clean_asia %>% 
+  filter(year == 2021) %>% 
+  arrange(-burden_mean) %>% 
+  head(1) %>% 
+  pull(country)
+
+asia_highest_mortpercap_value <- airpoll_mortality_clean_asia %>% 
+  filter(year == 2021) %>% 
+  arrange(-burden_mean) %>% 
+  head(1) %>% 
+  pull(burden_mean) %>% 
+  round(1)
+formatted_asia_highest_mortpercap_value <- comma(asia_highest_mortpercap_value)
+
+# highest PM2.5 in Asia
+
+asia_highest_pm25_country <- gbd_pm25exp_asia %>% 
+  filter(year == 2020) %>% 
+  arrange(-exposure_mean) %>% 
+  head(1) %>% 
+  pull(country)
+
+asia_highest_pm25_value <- gbd_pm25exp_asia %>% 
+  filter(year == 2020) %>% 
+  arrange(-exposure_mean) %>% 
+  head(1) %>% 
+  pull(exposure_mean) %>% 
+  round(1)
+
+
+```
+
+```{r}
+
+# Barplot of countries with the highest AP mortality (per 100,000) in 2021
+
+topmortality_countries <- airpoll_mortality_clean %>% 
+  filter(year == 2021) %>% 
+  arrange(desc(burden_mean)) %>% 
+  head(20) %>% 
+  mutate(tooltip_label = paste(country, round(burden_mean, 1), sep = ": ")) %>% 
+  ggplot(aes(y = reorder(country, burden_mean), 
+             x = burden_mean, 
+             fill = burden_mean,
+             text = tooltip_label)) +
+  geom_col(show.legend = FALSE) +
+  theme(legend.position = "none") +
+  geom_text(aes(label = round(burden_mean, 1)),
+                nudge_x = -10,
+                color = "white",
+                size = 3
+            ) +
+  labs (y = "Country",
+        x = "Deaths/100,000 population") +
+  scale_fill_gradient2(low = "white", high = "#fb8072") +
+  theme_bw()
+
+topmortality_countries_ggplotly <- ggplotly(topmortality_countries, tooltip = "text")  
+
+#topmortality_countries_ggplotly
+```
+
+```{r}
+
+# Barplot of countries in Asia with the highest AP mortality (per 100,000) in 2021
+
+asia_topmortality_countries <- airpoll_mortality_clean_asia %>% 
+  filter(year == 2021) %>% 
+  arrange(desc(burden_mean)) %>% 
+  head(20) %>% 
+  mutate(tooltip_label = paste(country, round(burden_mean, 1), sep = ": ")) %>% 
+  ggplot(aes(y = reorder(country, burden_mean), 
+             x = burden_mean, 
+             fill = burden_mean,
+             text = tooltip_label)) +
+  geom_col(show.legend = FALSE) +
+  theme(legend.position = "none") +
+  geom_text(aes(label = round(burden_mean, 1)),
+                nudge_x = -10,
+                color = "white",
+                size = 3
+            ) +
+  labs (y = "Country",
+        x = "Deaths/100,000 population") +
+  scale_fill_gradient2(low = "white", high = "#fb8072") +
+  theme_bw()
+
+asia_topmortality_countries_ggplotly <- ggplotly(asia_topmortality_countries, tooltip = "text") 
+
+```
+
+
+
+```{r}
+# Load the shapefiles
+
+country_shapes <- rnaturalearth::ne_countries()
+
+country_shapes2 <- country_shapes %>% 
+  select(adm0_a3, name, geometry) 
+
+# ggplot(country_shapes) +
+# geom_sf()
+
+```
+
+```{r}
+# Map for the AP mortality
+
+# Add country codes
+airpoll_mortality_clean2 <- airpoll_mortality_clean %>% 
+  mutate(country_code = countrycode(country, "country.name", "iso3c"))
+
+# Join the datasets and create the ggplot
+mortality_map <- left_join(country_shapes2, airpoll_mortality_clean2, 
+                      by = c("adm0_a3" = "country_code")) %>%
+  mutate(tooltip_label = paste(country, round(burden_mean, 1), 
+                               sep = ": ")) %>%
+  ggplot(aes(fill = burden_mean, frame = year, text = tooltip_label)) +
+  geom_sf() +
+  scale_fill_gradient(low = "#FFFECC",
+                      # mid = "#FEB24C",
+                      high = "#800F26",
+                      na.value = "grey50",
+                      name = "deaths"
+                      ) + 
+   theme_void() +
+   theme(legend.position = "right")
+
+# Convert ggplot to plotly and add tooltips and animation frame
+mortality_map_ggplotly <- 
+  ggplotly(mortality_map, tooltip = "tooltip_label") %>%
+  animation_opts(frame = 1000, redraw = FALSE, transition = 0)
+
+# mortality_map_ggplotly
+
+```
+
+```{r}
+# Map for the PM2.5 exposure
+
+# Add country codes
+gbd_pm25exp <- gbd_pm25exp %>% 
+  mutate(country_code = countrycode(country, "country.name", "iso3c"))
+
+# Join the datasets and create the ggplot
+pm25_map <- left_join(country_shapes, gbd_pm25exp, 
+                      by = c("adm0_a3" = "country_code")) %>%
+  mutate(tooltip_label = paste(country, round(exposure_mean, 1), 
+                               sep = ": ")) %>%
+  ggplot(aes(fill = exposure_mean, frame = year, text = tooltip_label)) +
+  geom_sf() +
+  scale_fill_gradient(low = "#EFF2F9", 
+                      high = "#354a86", 
+                      na.value = "grey50",
+                      name = "PM2.5 (ug/m3)") + 
+  theme_void() +
+  theme(legend.position = "right")
+
+# Convert ggplot to plotly and add tooltips and animation frame
+pm25_map_ggplotly <- ggplotly(pm25_map, tooltip = "tooltip_label") %>%
+  animation_opts(frame = 1000, redraw = FALSE, transition = 0)
+
+# pm25_map_ggplotly
+```
+
+
+```{r}
+
+gdp_mort_plot <- ggplot(
+   data = mortality_gdppercap,
+   mapping = aes(x = burden_mean,
+                 y = gdp_percapita,
+                 label = country,
+                 text = glue("GDP per capita: {number(gdp_percapita)}
+                             Deaths: {burden_mean}
+                             Country: {country}"), 
+                 size = burden_mean,
+                 fill = continent,
+                 frame = year)) + 
+   geom_point(shape = 21, 
+              color = "white", 
+              alpha = 0.8) +
+   scale_fill_brewer(palette = "Set2") + 
+   scale_size(range = c(2, 8), guide = "none") +
+   labs(x = "Deaths from air pollution (per 100,000)",
+        y = "GDP per capita)",
+        fill = "Continent") +
+   #guides(size = "none") + 
+  guides(fill = guide_legend(override.aes = list(size=5))) + 
+   theme_bw() +
+   scale_y_log10(labels = scales::dollar)
+ 
+ gdp_mort_plotly <- ggplotly(gdp_mort_plot, tooltip = "text")
+
+ # gdp_mort_plotly
+
+```
+
+```{r}
+
+asia_gdp_mort_plot <- ggplot(
+   data = asia_mortality_gdppercap,
+   mapping = aes(x = burden_mean,
+                 y = gdp_percapita,
+                 label = country,
+                 text = glue("GDP per capita: {number(gdp_percapita)}
+                             Deaths: {burden_mean}
+                             Country: {country}"), 
+                 size = burden_mean,
+                 fill = name,
+                 frame = year)) + 
+   geom_point(shape = 21, 
+              color = "white", 
+              alpha = 0.8) +
+   scale_fill_brewer(palette = "Set2") + 
+   scale_size(range = c(2, 8), guide = "none") +
+   labs(x = "Deaths from air pollution (per 100,000)",
+        y = "GDP per capita)",
+        fill = "Region") +
+   #guides(size = "none") + 
+  guides(fill = guide_legend(override.aes = list(size=5))) + 
+   theme_bw() +
+   scale_y_log10(labels = scales::dollar)
+ 
+ asia_gdp_mort_plotly <- ggplotly(asia_gdp_mort_plot, tooltip = "text")
+
+```
+```{r}
+custom_css <- "
+.value-box .value-box-value {
+  font-size: 20px; }
+"
+```
+
+
+# GLOBAL OUTLOOK
+
+## Row 1 {height=30%}
+
+```{r}
+value_box(
+  title = "Total global deaths from ambient air pollution in millions (2021)",
+  value = formatted_totalpm25_deaths,
+  showcase = bsicons::bs_icon("lungs-fill"),
+  theme = value_box_theme(bg = "#fb8072"),
+  p(paste0("(", pm25_percent_share, "% of all air pollution deaths)"))
+  )
+```
+
+
+```{r}
+value_box(
+  title = "Most ambient air pollution deaths in 2021 per 100,000 people",
+  value = highest_APmortality_value,
+  showcase = bsicons::bs_icon("lungs"),
+  theme = value_box_theme(bg = "#fcbba1"),
+  p(paste0("(", highest_APmortality_country, ")"))
+)
+```
+
+```{r}
+# value_box(
+#   title = "Least air pollution deaths in 2021 per 100,000 people",
+#   value = lowest_APmortality_value,
+#   showcase = bsicons::bs_icon("lungs"),
+#   theme = value_box_theme(bg = "#fcbba1"),
+#   p(paste0("(", lowest_APmortality_country, ")"))
+# )
+```
+
+```{r}
+value_box(
+  title = "Highest population-weighted PM2.5 level (µg/m3) in 2020",
+  value = highest_pm25_value,
+  showcase = bsicons::bs_icon("graph-up-arrow"),
+  theme = value_box_theme(bg = "#4059A2"),
+  p(paste0("(", highest_pm25_country, ")"))
+)
+```
+
+```{r}
+# value_box(
+#   title = "Lowest population-weighted PM2.5 level (ug/m3) in 2020",
+#   value = lowest_pm25_value,
+#   showcase = bsicons::bs_icon("graph-down-arrow"),
+#   theme = value_box_theme(bg = "#80b1d3"),
+#   p(paste0("(", lowest_pm25_country, ")"))
+#)
+```
+
+```{r}
+value_box(
+  title = "WHO Air Quality Guideline Value (annual PM2.5 in µg/m3)",
+  value = "5",
+  showcase = bsicons::bs_icon("wind"),
+  theme = value_box_theme(bg = "#80b1d3"),
+  )
+```
+
+
+## Row 2 {height=70%}
+
+### {width=30%}
+
+```{r title = "Countries with the highest ambient air pollution deaths"}
+topmortality_countries_ggplotly
+```
+
+### {width=70%}
+
+```{r title = "Ambient Air Pollution Deaths and Income (GDP)"}
+gdp_mort_plotly
+```
+
+# ASIA FOCUS
+
+## Row 1 {height=30%}
+
+```{r}
+value_box(
+  title = "Total ambient air pollution deaths in Asia in millions (2021)",
+  value = formatted_totalpm25_deaths_asia,
+  showcase = bsicons::bs_icon("lungs-fill"),
+  theme = value_box_theme(bg = "#fb8072"),
+  p(paste0("(", formatted_percent_share_asia, " of global total)"))
+ )
+```
+
+
+```{r}
+value_box(
+  title = "Highest total ambient air pollution deaths in millions (2021)",
+  value = formatted_asia_highest_APmortality_value,
+  showcase = bsicons::bs_icon("lungs"),
+  theme = value_box_theme(bg = "#fbc572"),
+  p(paste0("(", asia_highest_APmortality_country, ")"))
+ )
+```
+
+```{r}
+value_box(
+  title = "Most ambient air pollution deaths in 2021 per 100,000 people",
+  value = formatted_asia_highest_mortpercap_value,
+  showcase = bsicons::bs_icon("graph-up-arrow"),
+  theme = value_box_theme(bg = "#fb727b"),
+  p(paste0("(", asia_highest_mortpercap_country, ")"))
+)
+```
+
+```{r}
+value_box(
+  title = "Highest PM2.5 exposure",
+  value = asia_highest_pm25_value,
+  showcase = bsicons::bs_icon("wind"),
+  theme = value_box_theme(bg = "#fb8"),
+  p(paste0("(", asia_highest_pm25_country, ")"))
+)
+```
+
+## Row 2 {height=70%}
+
+### {width=30%}
+
+```{r title = "Highest mortality from ambient air pollution in Asia"}
+asia_topmortality_countries_ggplotly
+```
+
+### {width=70%}
+
+```{r title = "Ambient Air Pollution Deaths and Income (GDP)"}
+asia_gdp_mort_plotly
+```
+
+# MAPS
+
+## Row 1
+
+### Ambient air pollution (PM2.5)
+
+```{r title = "Levels of population-weighted PM2.5 exposure"}
+pm25_map_ggplotly
+```
+
+### Health burden of ambient air pollution
+
+```{r title = "Ambient air pollution deaths per 100,000 population"}
+mortality_map_ggplotly
+```
+
+
+
+
+# DOWNLOAD DATA
+
+The data used in this dashboard is shown below and can be downloaded as a CSV.
+
+```{r}
+
+htmltools::browsable(
+  tagList(
+    reactable(airpoll_mortality_clean,
+              elementId = "pm25deaths-table",
+              searchable = T,
+              filterable = T),
+    tags$button("Download as CSV", onclick = "Reactable.downloadDataCSV('pm25deaths-table')"),
+
+    )
+  )
+
+```
+
+
+# ABOUT
+
+Air pollution is the leading environmental health risk in the world, contributing more than 8 million deaths globally in 2021. Ambient or outdoor air pollution characterized by PM2.5 (fine particulate matter) causes 58% of this health burden.
+
+The data used in this work is from the Institute for Health Metrics and Evaluation (IHME)'s 2021 Global Burden of Disease (GBD) Study, with focus on the estimated ambient air pollution exposure and resulting mortality as published by the Health Effects Institute in 2024. GDP data was obtained from the World Bank while the shapefiles and other relevant information were imported from the rnaturalearth and gapminder r packages.
+
+
+Sources:
+
+Global Burden of Disease Collaborative Network. Global Burden of Disease Study 2021 (GBD 2021) Cause-Specific Mortality 1990-2021. Seattle, United States of America: Institute for Health Metrics and Evaluation (IHME), 2024.
+
+Health Effects Institute. 2024. State of Global Air 2024. Available: www.stateofglobalair.org [accessed 06/26/2024]. Data source: Global Burden of Disease Study 2021. IHME, 2024
+
+World Bank. GDP per capita, PPP (constant 2021 international $). Available: https://data.worldbank.org/indicator/NY.GDP.PCAP.PP.KD?skipRedirection=true&year=2023 [accessed 06/26/2024]
+
+
+*For questions and collaborations, please reach out to https://www.linkedin.com/in/everlyn-tamayo/. This dashboard was prepared as part of the GRAPH (Global Research and Analyses for Public Health) R Masterclass on Data Cleaning, GIS, GitHub, and Dashboards.
+
